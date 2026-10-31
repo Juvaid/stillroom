@@ -1,0 +1,11 @@
+node_modules
+.vercel
+dist
+screenshots
+attachments
+.grok
+.env
+.env.*
+*.log
+.node_modules.lock
+AGENTS.md
