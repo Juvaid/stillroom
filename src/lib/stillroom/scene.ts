@@ -1,4 +1,7 @@
 import type { Finding, Rgba, Shadow } from "./model.ts";
+import type { SceneShape } from "./vector.ts";
+
+export type { SceneShape } from "./vector.ts";
 
 export type TextRun = {
   value: string;
@@ -17,10 +20,19 @@ export type TextRun = {
   baseline: number;
 };
 
+export type SceneSmart = {
+  id: string;
+  placed: string;
+  name: string;
+  png?: Uint8Array;
+  svg?: string;
+  vector: boolean;
+};
+
 export type SceneLayer = {
   id: string;
   name: string;
-  kind: "group" | "pixel" | "type";
+  kind: "group" | "pixel" | "type" | "shape" | "smart";
   hidden: boolean;
   opacity: number;
   blendMode: string;
@@ -41,6 +53,9 @@ export type SceneLayer = {
     width: number;
     height: number;
   };
+  shape?: SceneShape;
+  smart?: SceneSmart;
+  clipRadii?: [number, number, number, number];
   baked?: boolean;
   folded?: boolean;
 };

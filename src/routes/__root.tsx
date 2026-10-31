@@ -13,7 +13,7 @@ export const Route = createRootRoute({
       { title: APP_NAME },
       {
         name: "description",
-        content: "Freeze an HTML, CSS, and JS frame — or a closed Remotion still — into a layered Photoshop document.",
+        content: "Drop a Remotion still. Download a layered Photoshop file.",
       },
       { name: "theme-color", content: "#141311" },
     ],

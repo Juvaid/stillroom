@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, EyeOff, Folder, Square, Type } from "lucide-react";
 import { captureFrame, prepareFrame, wrapSource } from "@/lib/stillroom/capture";
+import { readStillMeta, stillFilename } from "@/lib/stillroom/intake";
+import { projectFromPhotoshop, projectZip } from "@/lib/stillroom/from-psd";
 import type { Finding, FindingArea } from "@/lib/stillroom/model";
 import { downloadScene } from "@/lib/stillroom/psd";
 import { PRESETS, presetById } from "@/lib/stillroom/presets";
@@ -75,6 +77,8 @@ function LayerTree({
             <span className="min-w-0 flex-1 truncate font-mono">{layer.name}</span>
             {layer.hidden ? <EyeOff className="size-3.5 shrink-0" aria-hidden /> : null}
             {layer.baked ? <span className="font-mono text-xs text-accent">Baked</span> : null}
+            {layer.kind === "shape" ? <span className="font-mono text-xs">Shape</span> : null}
+            {layer.kind === "smart" ? <span className="font-mono text-xs">Smart</span> : null}
             {layer.folded ? <span className="font-mono text-xs">Folded</span> : null}
           </button>
           {layer.children.length > 0 ? (
@@ -103,12 +107,18 @@ export function Studio() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [scale, setScale] = useState(1);
+  const [writing, setWriting] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [notes, setNotes] = useState<string[]>([]);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const proofRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const token = useRef(0);
   const frameRef = useRef(frame);
   const loaded = useRef(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const psdRef = useRef<HTMLInputElement>(null);
+  const autoName = useRef<string | null>(null);
   frameRef.current = frame;
 
   const press = useCallback(
@@ -125,11 +135,20 @@ export function Studio() {
         if (id !== token.current) return;
         setScene(next);
         setDuration(next.duration);
+        const name = autoName.current;
+        if (name) {
+          autoName.current = null;
+          setWriting(true);
+          await downloadScene(next, stillFilename(next.comp || name, next.frame));
+        }
       } catch (err) {
         if (id !== token.current) return;
         setError(err instanceof Error ? err.message : "Could not read that frame.");
       } finally {
-        if (id === token.current) setBusy(false);
+        if (id === token.current) {
+          setBusy(false);
+          setWriting(false);
+        }
       }
     },
     [width, height],
@@ -148,7 +167,7 @@ export function Studio() {
   }, [html, width, height, press]);
 
   useEffect(() => {
-    if (!loaded.current) return;
+    if (!loaded.current || autoName.current) return;
     void press(frame);
   }, [frame, press]);
 
@@ -181,6 +200,7 @@ export function Studio() {
   }, [selected, tab]);
 
   const loadPreset = (id: string) => {
+    autoName.current = null;
     const preset = presetById(id);
     setPresetId(preset.id);
     setHtml(preset.html);
@@ -191,6 +211,70 @@ export function Studio() {
     setSelected(null);
     setView("frame");
     setTab("stage");
+  };
+
+  const takeFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!/\.html?$/i.test(file.name) && !file.type.includes("html")) {
+      setError("Drop an HTML still. A Remotion project folder is not a frame.");
+      return;
+    }
+    const text = await file.text();
+    if (!text.trim()) {
+      setError("That file is empty.");
+      return;
+    }
+    const meta = readStillMeta(text);
+    const same = text === html && meta.width === width && meta.height === height;
+    autoName.current = file.name.replace(/\.html?$/i, "");
+    setPresetId("file");
+    setSelected(null);
+    setView("frame");
+    setTab("stage");
+    setError(null);
+    setWidth(meta.width);
+    setHeight(meta.height);
+    setFrame(meta.frame);
+    setHtml(text);
+    setNotes([]);
+    if (same) void press(meta.frame);
+  };
+
+  const takePhotoshop = async (file: File | undefined) => {
+    if (!file) return;
+    if (!/\.psd$/i.test(file.name)) {
+      setError("That is not a Photoshop file.");
+      return;
+    }
+    setError(null);
+    setWriting(true);
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const project = await projectFromPhotoshop(bytes, file.name);
+      const zip = projectZip(project);
+      const copy = new Uint8Array(zip.byteLength);
+      copy.set(zip);
+      const url = URL.createObjectURL(new Blob([copy], { type: "application/zip" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${project.name.toLowerCase()}-remotion.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+      autoName.current = null;
+      setPresetId("file");
+      setSelected(null);
+      setView("frame");
+      setTab("stage");
+      setNotes(project.notes);
+      setWidth(project.width);
+      setHeight(project.height);
+      setFrame(0);
+      setHtml(project.html);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not read that Photoshop file.");
+    } finally {
+      setWriting(false);
+    }
   };
 
   const findings = scene?.findings.filter((finding) => area === "all" || finding.area === area) ?? [];
@@ -230,23 +314,74 @@ export function Studio() {
   const showStage = tab === "stage";
 
   return (
-    <main className="flex h-screen flex-col bg-bg text-fg">
-      <header className="flex items-center gap-3 border-b border-line px-4 py-3">
+    <main
+      className="flex h-screen flex-col bg-bg text-fg"
+      onDragOver={(event) => {
+        event.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        void (/\.psd$/i.test(event.dataTransfer.files[0]?.name ?? "")
+          ? takePhotoshop(event.dataTransfer.files[0])
+          : takeFile(event.dataTransfer.files[0]));
+      }}
+    >
+      <header className="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
         <div className="min-w-0">
           <p className="font-mono text-xs tracking-widest text-accent">STILLROOM</p>
-          <h1 className="truncate text-lg leading-tight">Press a still into layers</h1>
+          <h1 className="truncate text-lg leading-tight">Stillroom</h1>
         </div>
         <p className="hidden min-w-0 flex-1 text-sm text-muted lg:block">
-          HTML, CSS, and JS — or a Remotion frame with the timeline closed. Groups, type, and effects, and every place they stop being faithful.
+          Drop a PSD for a Remotion project: layer order, shapes, SVG, and clips. Drop an HTML still for a PSD.
         </p>
+        <input
+          ref={psdRef}
+          type="file"
+          accept=".psd,image/vnd.adobe.photoshop"
+          className="sr-only"
+          onChange={(event) => {
+            void takePhotoshop(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => psdRef.current?.click()}
+          disabled={writing}
+          className="inline-flex min-h-11 items-center gap-2 rounded-md bg-accent px-4 text-sm font-medium text-accent-fg disabled:opacity-40"
+        >
+          <Download className="size-4" aria-hidden />
+          {writing ? "Writing…" : "Photoshop to Remotion"}
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".html,.htm,text/html"
+          className="sr-only"
+          onChange={(event) => {
+            void takeFile(event.target.files?.[0]);
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={writing}
+          className="inline-flex min-h-11 items-center gap-2 rounded-md border border-line px-4 text-sm disabled:opacity-40"
+        >
+          <Download className="size-4" aria-hidden />
+          {writing ? "Writing…" : "Still to Photoshop"}
+        </button>
         <button
           type="button"
           onClick={exportPsd}
           disabled={!scene || busy}
-          className="inline-flex min-h-11 items-center gap-2 rounded-md bg-accent px-4 text-sm font-medium text-accent-fg disabled:opacity-40"
+          className="hidden min-h-11 items-center rounded-md border border-line px-3 text-sm sm:inline-flex disabled:opacity-40"
         >
-          <Download className="size-4" aria-hidden />
-          Export PSD
+          This frame
         </button>
       </header>
 
@@ -402,6 +537,20 @@ export function Studio() {
           </div>
           {view === "proof" ? (
             <p className="px-4 pb-2 text-xs text-muted">Rebuilt from the layer stack, not the live page. A gap here is listed under Fidelity.</p>
+          ) : (
+            <p className="px-4 pb-2 text-xs text-muted">Drop an HTML still anywhere. One file, one frame, one PSD.</p>
+          )}
+          {notes.length ? (
+            <div className="space-y-1 px-4 pb-2">
+              {notes.slice(0, 3).map((item) => (
+                <p key={item} className="text-xs text-muted">{item}</p>
+              ))}
+            </div>
+          ) : null}
+          {dragOver ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center border-2 border-dashed border-accent bg-bg/80">
+              <p className="text-sm">Drop a PSD or an HTML still.</p>
+            </div>
           ) : null}
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
             <div className="relative" style={{ width: width * scale, height: height * scale }}>

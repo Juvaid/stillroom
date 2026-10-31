@@ -31,14 +31,17 @@ What survives
 - box-shadow without spread becomes a live drop or inner shadow. Spread is written as choke.
 - These blends map straight across: multiply, screen, overlay, darken, lighten, color-dodge, color-burn, hard-light, soft-light, difference, exclusion, hue, saturation, color, luminosity.
 - Opacity under 1 isolates the group, so child blends stay inside it.
-- Images must be same-origin or data URLs. SVG is rasterized.
+- A filled box, pill, or circle is a Photoshop shape. Rasterize it there when you want pixels.
+- SVG rects, ellipses, and simple paths are shapes. Anything nested is a vector smart object.
+- Photos must be same-origin or data URLs. They are embedded smart objects. A corner radius is a vector mask on that object.
+- If an image or SVG cannot be copied, the box still lands as a shape or a plate of its CSS fill and border. Alt text becomes live type.
 - A ::before or ::after only if it is position: absolute with width and height in px.
 
 Do not use
 - backdrop-filter. It is dropped.
-- clip-path and mask-image. They are dropped.
+- clip-path, except a polygon on a single shape, which becomes that shape. mask-image is dropped.
 - display: none for something you want in the file. Use opacity: 0, or a clip whose frame range is off.
-- Cross-origin images. Their pixels cannot be copied.
+- Cross-origin images. Their pixels cannot be copied; you get the plate and the alt, not the picture.
 
 Size
 - Design at the export size. 72 CSS pixels equal 72 points. Stay within 1920 on a side.`;

@@ -15,9 +15,18 @@ import {
   type Finding,
   type Shadow,
 } from "./model.ts";
-import { paintBox, paintClippedText, paintMask, paintSolid, type PaintSpec } from "./paint.ts";
+import { paintBox, paintClippedText, paintMask, paintSolid, rgbaCss, type PaintSpec } from "./paint.ts";
 import { drawLayer, trimCanvas } from "./proof.ts";
 import type { Scene, SceneLayer, TextRun } from "./scene.ts";
+import {
+  clipPolygon,
+  parseSvgPath,
+  pathsForShape,
+  polygonPath,
+  shapeFromPaint,
+  solidShape,
+  type SceneShape,
+} from "./vector.ts";
 
 const SKIP = new Set([
   "SCRIPT",
@@ -276,6 +285,154 @@ function rasterImage(doc: Document, img: HTMLImageElement, w: number, h: number)
   } catch {
     return null;
   }
+}
+
+function clipToRadii(doc: Document, canvas: HTMLCanvasElement, radii: [number, number, number, number]): HTMLCanvasElement {
+  if (radii.every((radius) => radius < 0.5)) return canvas;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+  const mask = paintMask(doc, canvas.width, canvas.height, radii);
+  ctx.globalCompositeOperation = "destination-in";
+  ctx.drawImage(mask, 0, 0);
+  return canvas;
+}
+
+function guid() {
+  return crypto.randomUUID();
+}
+
+function fileSlug(name: string) {
+  const clean = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return (clean || "asset").slice(0, 40);
+}
+
+function pngBytes(canvas: HTMLCanvasElement): Uint8Array | null {
+  try {
+    const url = canvas.toDataURL("image/png");
+    const body = url.split(",")[1];
+    if (!body) return null;
+    const bin = atob(body);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function paintVector(doc: Document, shape: SceneShape, box: { x: number; y: number; w: number; h: number }) {
+  const canvas = doc.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(box.w));
+  canvas.height = Math.max(1, Math.round(box.h));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+  const paths = pathsForShape(shape, box);
+  ctx.save();
+  ctx.translate(-box.x, -box.y);
+  ctx.beginPath();
+  for (const path of paths) {
+    path.knots.forEach((item, index) => {
+      const [, , x, y] = item.points;
+      if (index === 0) ctx.moveTo(x, y);
+      else {
+        const prev = path.knots[index - 1].points;
+        ctx.bezierCurveTo(prev[4], prev[5], item.points[0], item.points[1], x, y);
+      }
+    });
+    if (!path.open) ctx.closePath();
+  }
+  if (shape.fill?.type === "color") {
+    ctx.fillStyle = rgbaCss(shape.fill.color);
+    ctx.fill();
+  }
+  if (shape.stroke) {
+    ctx.strokeStyle = rgbaCss(shape.stroke.color);
+    ctx.lineWidth = shape.stroke.width;
+    if (shape.stroke.dash.length) ctx.setLineDash(shape.stroke.dash);
+    ctx.stroke();
+  }
+  ctx.restore();
+  return canvas;
+}
+
+function smartOf(shell: SceneLayer, canvas: HTMLCanvasElement, file: { name: string; png?: Uint8Array; svg?: string; vector: boolean }, radii?: [number, number, number, number]): SceneLayer {
+  const id = guid();
+  return {
+    ...shell,
+    kind: "smart",
+    canvas,
+    smart: { id, placed: guid(), name: file.name, png: file.png, svg: file.svg, vector: file.vector },
+    clipRadii: radii,
+  };
+}
+
+function missingAsset(
+  cap: Cap,
+  el: Element,
+  style: CSSStyleDeclaration,
+  shell: SceneLayer,
+  box: { x: number; y: number; w: number; h: number },
+  kind: "image" | "svg",
+): SceneLayer | null {
+  const spec = paintSpec(style, box);
+  const painted = paintBox(cap.doc, spec);
+  const plateSpec = painted
+    ? spec
+    : {
+        ...spec,
+        backgroundColor: "rgba(244, 240, 232, 0.08)",
+        border: { top: 1, right: 1, bottom: 1, left: 1, color: "#9c968c", style: "dashed" },
+      };
+  const canvas = painted ?? paintBox(cap.doc, plateSpec);
+  if (!canvas) return null;
+  const shape = shapeFromPaint(plateSpec, false);
+  note(
+    cap,
+    {
+      area: "effects",
+      fate: shape ? "approximated" : "baked",
+      title: kind === "image" ? "Blocked image kept its box" : "SVG that failed kept its box",
+      detail: shape
+        ? "The file’s pixels were not copied. The box is a live shape of its CSS fill and border, not a mask and not a smart object. Alt text, if any, is a type layer on top."
+        : "The file’s pixels were not copied, and the box was too complex for a shape, so it is a bitmap plate.",
+      layerId: shell.id,
+    },
+    `asset-plate:${kind}`,
+  );
+  const plate: SceneLayer = {
+    ...shell,
+    kind: shape ? "shape" : "pixel",
+    shape: shape ?? undefined,
+    canvas,
+    left: box.x,
+    top: box.y,
+    width: canvas.width,
+    height: canvas.height,
+  };
+  const alt = kind === "image" ? (el as HTMLImageElement).alt.trim() : "";
+  if (!alt) return plate;
+  const typeId = `L${(cap.ids += 1)}`;
+  const text = textRun(cap, el, style, alt, typeId);
+  if (!text) return plate;
+  return {
+    ...shell,
+    kind: "group",
+    canvas: undefined,
+    children: [
+      { ...plate, id: `L${(cap.ids += 1)}`, name: `${shell.name} plate` },
+      {
+        ...shell,
+        id: typeId,
+        name: `${shell.name} alt`,
+        kind: "type",
+        text,
+        canvas: undefined,
+        opacity: 1,
+        blendMode: "normal",
+        children: [],
+      },
+    ],
+  };
 }
 
 function measureBaseline(doc: Document, el: Element, font: string, fontSize: number, fallback: number): number {
@@ -561,6 +718,137 @@ async function bakeSubtree(cap: Cap, el: Element, style: CSSStyleDeclaration, wh
   };
 }
 
+function svgSpace(el: Element, box: { w: number; h: number }) {
+  const viewBox = el.getAttribute("viewBox");
+  if (viewBox) {
+    const [minX, minY, vw, vh] = viewBox.trim().split(/[\s,]+/).map(Number);
+    if ([minX, minY, vw, vh].every((n) => Number.isFinite(n)) && vw > 0 && vh > 0) {
+      return { minX, minY, sx: box.w / vw, sy: box.h / vh };
+    }
+  }
+  return { minX: 0, minY: 0, sx: 1, sy: 1 };
+}
+
+function svgInk(el: Element): { fill: ReturnType<typeof parseColor>; stroke: ReturnType<typeof parseColor>; width: number } | null {
+  const view = el.ownerDocument.defaultView;
+  if (!view) return null;
+  const style = view.getComputedStyle(el);
+  const fillAttr = el.getAttribute("fill");
+  const strokeAttr = el.getAttribute("stroke");
+  if ((fillAttr && fillAttr.includes("url(")) || (strokeAttr && strokeAttr.includes("url("))) return null;
+  if ((style.fill && style.fill.includes("url(")) || (style.stroke && style.stroke.includes("url("))) return null;
+  const fill = fillAttr === "none" || style.fill === "none" ? null : parseColor(style.fill);
+  const stroke = strokeAttr === "none" || style.stroke === "none" ? null : parseColor(style.stroke);
+  const width = px(style.strokeWidth) || px(el.getAttribute("stroke-width") || "") || 1;
+  return { fill, stroke, width };
+}
+
+function shapeLayerFrom(
+  shell: SceneLayer,
+  shape: SceneShape,
+  box: { x: number; y: number; w: number; h: number },
+  doc: Document,
+  name: string,
+  id: string,
+): SceneLayer {
+  return {
+    ...shell,
+    id,
+    name,
+    kind: "shape",
+    left: box.x,
+    top: box.y,
+    width: box.w,
+    height: box.h,
+    box,
+    shape,
+    canvas: paintVector(doc, shape, box),
+    children: [],
+    opacity: 1,
+    blendMode: "normal",
+  };
+}
+
+function explodeSvg(cap: Cap, el: Element, shell: SceneLayer, box: { x: number; y: number; w: number; h: number }): SceneLayer[] | null {
+  const kids = [...el.children];
+  if (!kids.length) return null;
+  if (kids.some((kid) => !["rect", "circle", "ellipse", "path", "polygon", "polyline", "line"].includes(kid.tagName.toLowerCase()))) return null;
+  if (kids.some((kid) => kid.getAttribute("transform"))) return null;
+  const space = svgSpace(el, box);
+  const X = (value: number) => box.x + (value - space.minX) * space.sx;
+  const Y = (value: number) => box.y + (value - space.minY) * space.sy;
+  const layers: SceneLayer[] = [];
+  for (const kid of kids) {
+    const ink = svgInk(kid);
+    if (!ink || (!ink.fill && !ink.stroke)) return null;
+    const tag = kid.tagName.toLowerCase();
+    const stroke = ink.stroke ? { color: ink.stroke, width: ink.width, dash: [] as number[] } : null;
+    const fill = ink.fill ? { type: "color" as const, color: ink.fill } : null;
+    let shape: SceneShape | null = null;
+    let bounds = { x: box.x, y: box.y, w: box.w, h: box.h };
+    if (tag === "rect") {
+      const x = parseFloat(kid.getAttribute("x") || "0");
+      const y = parseFloat(kid.getAttribute("y") || "0");
+      const w = parseFloat(kid.getAttribute("width") || "0");
+      const h = parseFloat(kid.getAttribute("height") || "0");
+      const rx = parseFloat(kid.getAttribute("rx") || kid.getAttribute("ry") || "0");
+      const ry = parseFloat(kid.getAttribute("ry") || kid.getAttribute("rx") || "0");
+      if (!(w > 0) || !(h > 0)) return null;
+      bounds = { x: X(x), y: Y(y), w: w * space.sx, h: h * space.sy };
+      const radius = ((rx || 0) * space.sx + (ry || 0) * space.sy) / (rx && ry ? 2 : 1);
+      const radii = [radius, radius, radius, radius] as [number, number, number, number];
+      shape = { origin: radius > 0.5 ? "round" : "rect", radii, fill, stroke };
+    } else if (tag === "circle" || tag === "ellipse") {
+      const cx = parseFloat(kid.getAttribute("cx") || "0");
+      const cy = parseFloat(kid.getAttribute("cy") || "0");
+      const rx = tag === "circle" ? parseFloat(kid.getAttribute("r") || "0") : parseFloat(kid.getAttribute("rx") || "0");
+      const ry = tag === "circle" ? rx : parseFloat(kid.getAttribute("ry") || "0");
+      if (!(rx > 0) || !(ry > 0)) return null;
+      bounds = { x: X(cx - rx), y: Y(cy - ry), w: rx * 2 * space.sx, h: ry * 2 * space.sy };
+      shape = { origin: "ellipse", radii: [bounds.w / 2, bounds.w / 2, bounds.w / 2, bounds.w / 2], fill, stroke };
+    } else if (tag === "line") {
+      const x1 = parseFloat(kid.getAttribute("x1") || "0");
+      const y1 = parseFloat(kid.getAttribute("y1") || "0");
+      const x2 = parseFloat(kid.getAttribute("x2") || "0");
+      const y2 = parseFloat(kid.getAttribute("y2") || "0");
+      const path = polygonPath([{ x: X(x1), y: Y(y1) }, { x: X(x2), y: Y(y2) }], true);
+      if (!path || !stroke) return null;
+      bounds = { x: Math.min(X(x1), X(x2)), y: Math.min(Y(y1), Y(y2)), w: Math.max(1, Math.abs(X(x2) - X(x1))), h: Math.max(1, Math.abs(Y(y2) - Y(y1))) };
+      shape = { origin: "path", radii: [0, 0, 0, 0], fill: null, stroke, paths: [path] };
+    } else if (tag === "polygon" || tag === "polyline") {
+      const raw = kid.getAttribute("points") || "";
+      const nums = raw.trim().split(/[\s,]+/).map(Number);
+      if (nums.length < 4 || nums.some((n) => !Number.isFinite(n))) return null;
+      const points = [];
+      for (let i = 0; i < nums.length - 1; i += 2) points.push({ x: X(nums[i]), y: Y(nums[i + 1]) });
+      const path = polygonPath(points, tag === "polyline");
+      if (!path) return null;
+      const xs = points.map((point) => point.x);
+      const ys = points.map((point) => point.y);
+      bounds = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(1, Math.max(...xs) - Math.min(...xs)), h: Math.max(1, Math.max(...ys) - Math.min(...ys)) };
+      shape = { origin: "path", radii: [0, 0, 0, 0], fill: tag === "polyline" ? null : fill, stroke, paths: [path] };
+    } else if (tag === "path") {
+      const parsed = parseSvgPath(kid.getAttribute("d") || "");
+      if (!parsed) return null;
+      const paths = parsed.map((path) => ({
+        open: path.open,
+        knots: path.knots.map((item) => ({
+          linked: item.linked,
+          points: item.points.map((value, index) => (index % 2 === 0 ? X(value) : Y(value))),
+        })),
+      }));
+      const anchors = paths.flatMap((path) => path.knots.map((item) => ({ x: item.points[2], y: item.points[3] })));
+      const xs = anchors.map((point) => point.x);
+      const ys = anchors.map((point) => point.y);
+      bounds = { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(1, Math.max(...xs) - Math.min(...xs)), h: Math.max(1, Math.max(...ys) - Math.min(...ys)) };
+      shape = { origin: "path", radii: [0, 0, 0, 0], fill: paths.some((path) => !path.open) ? fill : null, stroke, paths };
+    }
+    if (!shape) return null;
+    layers.push(shapeLayerFrom(shell, shape, bounds, cap.doc, kid.getAttribute("data-layer") || tag, `L${(cap.ids += 1)}`));
+  }
+  return layers.length ? layers : null;
+}
+
 async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<SceneLayer | null> {
   const view = cap.doc.defaultView;
   if (!view || SKIP.has(el.tagName)) return null;
@@ -649,40 +937,75 @@ async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<Scen
 
   const tag = el.tagName.toUpperCase();
   if (tag === "SVG") {
+    const pieces = explodeSvg(cap, el, shell, box);
+    if (pieces?.length) {
+      note(
+        cap,
+        {
+          area: "effects",
+          fate: "faithful",
+          title: "SVG is live shapes",
+          detail: "Rects, ellipses, and paths became Photoshop shape layers. Rasterize them in Photoshop when you want pixels. They are not smart objects and not masks.",
+          layerId: shell.id,
+        },
+        "svg-shape",
+      );
+      if (pieces.length === 1) {
+        return { ...pieces[0], id: shell.id, name: shell.name, hidden: shell.hidden, opacity: shell.opacity * pieces[0].opacity };
+      }
+      return { ...shell, kind: "group", children: pieces, canvas: undefined };
+    }
     const canvas = await rasterSvg(cap.doc, el, box.w, box.h);
+    if (!canvas) return missingAsset(cap, el, style, shell, box, "svg");
+    const xml = new XMLSerializer().serializeToString(el);
     note(
       cap,
       {
         area: "effects",
-        fate: canvas ? "baked" : "dropped",
-        title: canvas ? "SVG is a pixel layer" : "SVG could not be drawn",
-        detail: canvas
-          ? "Paths, strokes, and fills inside the SVG are rasterized. Photoshop will not get live vectors."
-          : "The SVG failed to rasterize and was left out.",
+        fate: "faithful",
+        title: "SVG is a vector smart object",
+        detail: "This drawing was too nested to split into shapes, so the SVG file is embedded. Double-click it in Photoshop, or rasterize the smart object. The proof shows a bitmap of the same file.",
         layerId: shell.id,
       },
-      canvas ? "svg" : `svg-fail:${shell.id}`,
+      "svg-smart",
     );
-    if (!canvas) return null;
-    return { ...shell, kind: "pixel", canvas, left: box.x, top: box.y, width: canvas.width, height: canvas.height };
+    return smartOf(shell, canvas, { name: `${fileSlug(shell.name)}.svg`, svg: xml, vector: true });
   }
   if (tag === "IMG") {
     const canvas = rasterImage(cap.doc, el as HTMLImageElement, box.w, box.h);
+    if (!canvas) return missingAsset(cap, el, style, shell, box, "image");
+    const png = pngBytes(canvas);
+    const radii = radiiOf(style);
+    const rounded = radii.some((radius) => radius >= 0.5);
+    if (!png) {
+      note(
+        cap,
+        {
+          area: "effects",
+          fate: "baked",
+          title: "Image stayed pixels",
+          detail: "The bitmap could not be packed into a smart object, so it was written as a plain pixel layer.",
+          layerId: shell.id,
+        },
+        `img-pixel:${shell.id}`,
+      );
+      return { ...shell, kind: "pixel", canvas: rounded ? clipToRadii(cap.doc, canvas, radii) : canvas, left: box.x, top: box.y };
+    }
     note(
       cap,
       {
         area: "effects",
-        fate: canvas ? "baked" : "dropped",
-        title: canvas ? "Image is a pixel layer" : "Image was blocked",
-        detail: canvas
-          ? "The bitmap is placed at the element box. It is not a linked smart object."
-          : "The image is cross-origin or not loaded, so its pixels cannot be copied into the PSD.",
+        fate: "faithful",
+        title: "Image is a smart object",
+        detail: rounded
+          ? "The photo is embedded. You can edit it, replace it, or rasterize it in Photoshop. The corner radius is a vector mask on that smart object, not baked into the file."
+          : "The photo is embedded at the size it was drawn. It is not a linked file on disk. Rasterize it in Photoshop when you want a plain pixel layer.",
         layerId: shell.id,
       },
-      canvas ? "img" : `img-fail:${shell.id}`,
+      "img-smart",
     );
-    if (!canvas) return null;
-    return { ...shell, kind: "pixel", canvas, left: box.x, top: box.y };
+    const proof = rounded ? clipToRadii(cap.doc, canvas, radii) : canvas;
+    return smartOf(shell, proof, { name: `${fileSlug(shell.name)}.png`, png, vector: false }, rounded ? radii : undefined);
   }
 
   const clipped = textClipped(style);
@@ -715,7 +1038,7 @@ async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<Scen
         area: "effects",
         fate: "approximated",
         title: "Shadow-only box uses Fill 0%",
-        detail: "A transparent CSS box still casts a shadow. Photoshop shadows follow pixels, so the layer is an opaque shape with Fill set to 0% and a live shadow.",
+        detail: "A transparent CSS box still casts a shadow. The layer is a live shape with Fill set to 0%, so the shadow follows the vector. Rasterize the shape in Photoshop if you want pixels.",
         layerId: shell.id,
       },
       "shadow-only",
@@ -773,13 +1096,51 @@ async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<Scen
   }
 
   const parts: SceneLayer[] = [];
+  let consumedClip = false;
   if (canvas) {
+    let shape = shapeFromPaint(spec, bordersDiffer(style));
+    if (!shape && fillOpacity === 0) shape = solidShape(box, spec.radii, { r: 0, g: 0, b: 0, a: 1 });
+    const polygon = shape && !childEls.length && !directText.trim() ? clipPolygon(style.clipPath || "", box) : null;
+    if (shape && polygon) {
+      shape = { ...shape, origin: "path", paths: [polygon], radii: [0, 0, 0, 0] };
+      consumedClip = true;
+    }
+    if (shape) {
+      const gradient = shape.fill?.type === "linear" || shape.fill?.type === "radial";
+      note(
+        cap,
+        {
+          area: "effects",
+          fate: gradient || shape.stroke?.dash.length || shape.origin === "path" ? "approximated" : "faithful",
+          title: "CSS box is a live shape",
+          detail: gradient
+            ? "The fill is a Photoshop shape with a gradient. The angle is converted from CSS. Rasterize the layer in Photoshop when you want pixels."
+            : shape.origin === "path"
+              ? "A polygon clip became the shape outline. It is not a mask. Rasterize it in Photoshop when you want pixels."
+              : "Filled boxes, pills, and circles are shape layers, so the corner radius stays editable. Rasterize them in Photoshop when you want pixels.",
+        },
+        gradient ? "shape-gradient" : shape.origin === "path" ? "shape-path" : "shape-live",
+      );
+    } else {
+      note(
+        cap,
+        {
+          area: "effects",
+          fate: "baked",
+          title: "This fill stayed pixels",
+          detail: "The paint was more than one color, one gradient, and a stroke, so it could not become a shape. It is a bitmap.",
+          layerId: shell.id,
+        },
+        `shape-raster:${shell.id}`,
+      );
+    }
     parts.push({
       ...shell,
       id: childEls.length || directText.trim() ? `L${(cap.ids += 1)}` : shell.id,
       name: childEls.length || directText.trim() ? `${shell.name} fill` : shell.name,
-      kind: "pixel",
-      canvas,
+      kind: shape ? "shape" : "pixel",
+      shape: shape ?? undefined,
+      canvas: shape?.origin === "path" && shape.fill?.type === "color" ? paintVector(cap.doc, shape, box) : canvas,
       left: box.x,
       top: box.y,
       width: canvas.width,
@@ -949,14 +1310,14 @@ async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<Scen
 
   const needsClip = clips(style) && parts.length > (canvas ? 1 : 0);
   const clipPath = style.clipPath && style.clipPath !== "none";
-  if (clipPath) {
+  if (clipPath && !consumedClip) {
     note(
       cap,
       {
         area: "groups",
         fate: "dropped",
         title: "clip-path is not a mask yet",
-        detail: `${style.clipPath} was not converted. Overflow hidden with a border radius does become a raster mask; arbitrary clip paths do not.`,
+        detail: `${style.clipPath} was not converted. A polygon on a single shape becomes that shape’s outline. Overflow hidden with a border radius is still the only raster mask.`,
         layerId: shell.id,
       },
       "clip-path",

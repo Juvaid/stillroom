@@ -95,6 +95,24 @@ const effects = `
   </div>
 </div>`;
 
+const assets = `
+<div data-clip="sheet" style="position:relative;width:880px;height:640px;background:#efeae2;color:#141311;font-family:'Liberation Sans',Arial,sans-serif;overflow:hidden;">
+  <div data-layer="index" style="position:absolute;left:48px;top:36px;font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#9c968c;">Assets</div>
+  <img data-layer="photo" alt="" width="280" height="160" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='280' height='160'%3E%3Crect width='280' height='160' fill='%232a211c'/%3E%3Ccircle cx='86' cy='80' r='36' fill='%23e23d1a'/%3E%3Crect x='150' y='48' width='90' height='10' fill='%23f4f0e8'/%3E%3Crect x='150' y='70' width='70' height='8' fill='%239c968c'/%3E%3C/svg%3E" style="position:absolute;left:48px;top:72px;width:280px;height:160px;border-radius:18px;object-fit:cover;" />
+  <img data-layer="missing" alt="File missing — plate only" src="https://invalid.invalid/stillroom-missing.png" width="280" height="120" style="position:absolute;left:48px;top:256px;width:280px;height:120px;background:#141311;color:#f4f0e8;border-radius:16px;font-size:16px;padding:22px;box-sizing:border-box;" />
+  <svg data-layer="mark" width="64" height="64" viewBox="0 0 64 64" style="position:absolute;left:360px;top:72px;">
+    <rect x="4" y="4" width="56" height="56" rx="14" fill="none" stroke="#141311" stroke-width="2"></rect>
+    <path d="M20 34l8 8 16-18" fill="none" stroke="#e23d1a" stroke-width="3"></path>
+  </svg>
+  <div data-layer="notice" style="position:absolute;left:360px;top:160px;width:280px;background:#fff;border-radius:16px;padding:18px 18px 18px 20px;box-shadow:0 16px 30px rgba(20,19,17,0.12);border-left:4px solid #e23d1a;">
+    <div style="font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#e23d1a;">Notice</div>
+    <div style="margin-top:8px;font-size:16px;line-height:1.4;">A callout is a CSS box plus type. The box is pixels. The words stay editable.</div>
+  </div>
+  <div data-layer="dot" style="position:absolute;right:64px;top:72px;width:88px;height:88px;border-radius:999px;background:#e23d1a;box-shadow:0 12px 24px rgba(226,61,26,0.35);"></div>
+  <div data-layer="diamond" style="position:absolute;right:72px;top:190px;width:72px;height:72px;background:#141311;clip-path:polygon(50% 0, 100% 50%, 50% 100%, 0 50%);"></div>
+  <div data-layer="legend" style="position:absolute;left:48px;right:48px;bottom:36px;font-size:14px;line-height:1.45;color:#4a453e;">The photo is a smart object. The icon is shapes. The broken file keeps its plate and alt type. The circle is a live ellipse. The diamond’s polygon is the shape outline.</div>
+</div>`;
+
 export const PRESETS: Preset[] = [
   {
     id: "launch",
@@ -135,6 +153,16 @@ export const PRESETS: Preset[] = [
     frame: 0,
     duration: null,
     html: effects.trim(),
+  },
+  {
+    id: "assets",
+    name: "Assets and notices",
+    note: "A photo, a blocked file, an SVG, a callout, a circle, a clip-path.",
+    width: 880,
+    height: 640,
+    frame: 0,
+    duration: null,
+    html: assets.trim(),
   },
 ];
 
