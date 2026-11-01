@@ -11,6 +11,6 @@ npm install
 npm run dev
 ```
 
-The fidelity list, the benchmark we do not pretend to have, and the review of the next changes are in [docs/PRESS.md](docs/PRESS.md).
+The fidelity list, the benchmark we do not pretend to have, and the review of the next changes are in [docs/PRESS.md](docs/PRESS.md). The surface, and why it follows Figma’s interaction on a Framer-like frame rather than Photoshop’s panels, is in [docs/SURFACE.md](docs/SURFACE.md).
 
 Open the source column and copy **Agent brief — Statics only** when an agent is building a still for this press, not a motion comp.

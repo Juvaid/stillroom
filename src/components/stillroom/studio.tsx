@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, EyeOff, Folder, Square, Type } from "lucide-react";
 import { captureFrame, prepareFrame, wrapSource } from "@/lib/stillroom/capture";
-import { readStillMeta, stillFilename } from "@/lib/stillroom/intake";
+import { patchStill, stampStillIds, topLayerAt } from "@/lib/stillroom/edit";
+import { canRedo, canUndo, historyOf, record, redo, undo, type DocSnap } from "@/lib/stillroom/history";
 import { projectFromPhotoshop, projectZip } from "@/lib/stillroom/from-psd";
+import { readStillMeta, stillFilename } from "@/lib/stillroom/intake";
 import type { Finding, FindingArea } from "@/lib/stillroom/model";
 import { downloadScene } from "@/lib/stillroom/psd";
 import { PRESETS, presetById } from "@/lib/stillroom/presets";
@@ -28,9 +30,9 @@ const AREAS: { id: Area; label: string }[] = [
   { id: "effects", label: "Effects" },
 ];
 
-function clampSize(value: number) {
-  if (!Number.isFinite(value)) return 320;
-  return Math.min(1920, Math.max(64, Math.round(value)));
+function canvasSize(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.round(value));
 }
 
 function highlightFor(layers: SceneLayer[], id: string, baked: SceneLayer | null = null): SceneLayer | null {
@@ -90,12 +92,60 @@ function LayerTree({
   );
 }
 
+function EditFields({
+  layer,
+  onApply,
+}: {
+  layer: SceneLayer;
+  onApply: (x: number, y: number, extra: { opacity?: number; fontSize?: number }) => void;
+}) {
+  return (
+    <form
+      className="space-y-2 border-t border-line px-3 py-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        onApply(Number(data.get("x")), Number(data.get("y")), {
+          opacity: Number(data.get("opacity")),
+          ...(layer.text ? { fontSize: Number(data.get("size")) } : {}),
+        });
+      }}
+    >
+      <p className="font-mono text-xs tracking-widest text-muted">ON THE CANVAS</p>
+      <div className="grid grid-cols-2 gap-2">
+        <label className="text-xs text-muted">
+          X
+          <input name="x" type="number" defaultValue={Math.round(layer.box.x)} className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg" />
+        </label>
+        <label className="text-xs text-muted">
+          Y
+          <input name="y" type="number" defaultValue={Math.round(layer.box.y)} className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg" />
+        </label>
+        <label className="text-xs text-muted">
+          Opacity
+          <input name="opacity" type="number" min={0} max={1} step={0.05} defaultValue={layer.opacity} className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg" />
+        </label>
+        {layer.text ? (
+          <label className="text-xs text-muted">
+            Size
+            <input name="size" type="number" min={1} defaultValue={Math.round(layer.text.fontSize)} className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg" />
+          </label>
+        ) : null}
+      </div>
+      <button type="submit" className="min-h-11 w-full rounded-md border border-line text-sm">
+        Apply
+      </button>
+    </form>
+  );
+}
+
 export function Studio() {
   const opening = PRESETS[0];
-  const [html, setHtml] = useState(opening.html);
+  const [history, setHistory] = useState(() =>
+    historyOf({ html: stampStillIds(opening.html), width: opening.width, height: opening.height }),
+  );
+  const { html, width, height } = history.present;
   const [presetId, setPresetId] = useState(opening.id);
-  const [width, setWidth] = useState(opening.width);
-  const [height, setHeight] = useState(opening.height);
   const [frame, setFrame] = useState(opening.frame);
   const [duration, setDuration] = useState<number | null>(opening.duration);
   const [scene, setScene] = useState<Scene | null>(null);
@@ -118,7 +168,40 @@ export function Studio() {
   const loaded = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const psdRef = useRef<HTMLInputElement>(null);
+  const move = useRef<{
+    name: string;
+    el: HTMLElement;
+    px: number;
+    py: number;
+    boxX: number;
+    boxY: number;
+    lastX: number;
+    lastY: number;
+    stillId: string;
+    hint: string;
+  } | null>(null);
   const autoName = useRef<string | null>(null);
+  const commit = (snap: DocSnap, burst = false) => {
+    setHistory((current) => record(current, { ...snap, html: stampStillIds(snap.html) }, burst));
+  };
+  const historyRef = useRef(history);
+  historyRef.current = history;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const meta = event.metaKey || event.ctrlKey;
+      if (!meta) return;
+      const key = event.key.toLowerCase();
+      if (key !== "z" && key !== "y") return;
+      const current = historyRef.current;
+      const redoKey = key === "y" || (key === "z" && event.shiftKey);
+      if (redoKey ? !canRedo(current) : !canUndo(current)) return;
+      event.preventDefault();
+      setHistory((stack) => (redoKey ? redo(stack) : undo(stack)));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   frameRef.current = frame;
 
   const press = useCallback(
@@ -203,9 +286,7 @@ export function Studio() {
     autoName.current = null;
     const preset = presetById(id);
     setPresetId(preset.id);
-    setHtml(preset.html);
-    setWidth(preset.width);
-    setHeight(preset.height);
+    commit({ html: preset.html, width: preset.width, height: preset.height });
     setFrame(preset.frame);
     setDuration(preset.duration);
     setSelected(null);
@@ -232,10 +313,8 @@ export function Studio() {
     setView("frame");
     setTab("stage");
     setError(null);
-    setWidth(meta.width);
-    setHeight(meta.height);
+    commit({ html: text, width: meta.width, height: meta.height });
     setFrame(meta.frame);
-    setHtml(text);
     setNotes([]);
     if (same) void press(meta.frame);
   };
@@ -266,15 +345,92 @@ export function Studio() {
       setView("frame");
       setTab("stage");
       setNotes(project.notes);
-      setWidth(project.width);
-      setHeight(project.height);
+      commit({ html: project.html, width: project.width, height: project.height });
       setFrame(0);
-      setHtml(project.html);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not read that Photoshop file.");
     } finally {
       setWriting(false);
     }
+  };
+
+  const elementFor = (box: { x: number; y: number; w: number; h: number }) => {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc?.body) return null;
+    const view = doc.defaultView;
+    if (!view) return null;
+    const canEdit = (node: Element): node is HTMLElement =>
+      node instanceof view.HTMLElement || node instanceof view.SVGElement;
+    const origin = doc.documentElement.getBoundingClientRect();
+    let best: HTMLElement | null = null;
+    let score = Infinity;
+    for (const node of doc.body.querySelectorAll("*")) {
+      if (!canEdit(node) || !node.getAttribute("data-still")) continue;
+      const rect = node.getBoundingClientRect();
+      const dx = rect.left - origin.left - box.x;
+      const dy = rect.top - origin.top - box.y;
+      const dw = rect.width - box.w;
+      const dh = rect.height - box.h;
+      const dist = dx * dx + dy * dy + dw * dw + dh * dh;
+      const deeper = Boolean(best && dist < score + 16 && best.contains(node));
+      if (dist < score || deeper) {
+        score = dist;
+        best = node;
+      }
+    }
+    return score < 400 ? best : null;
+  };
+
+  const hintFor = (el: Element) => {
+    const named = el.getAttribute("data-layer") || el.getAttribute("data-clip") || el.id;
+    if (named) return named;
+    const text = (el.textContent || "").trim().split(/\s+/).slice(0, 3).join(" ");
+    return text || el.tagName.toLowerCase();
+  };
+
+  const place = (el: HTMLElement, artX: number, artY: number) => {
+    const root = el.ownerDocument.documentElement.getBoundingClientRect();
+    const parent = (el.offsetParent as HTMLElement | null)?.getBoundingClientRect() ?? root;
+    el.style.position = "absolute";
+    el.style.margin = "0";
+    el.style.right = "auto";
+    el.style.bottom = "auto";
+    el.style.inset = "auto";
+    el.style.transform = "none";
+    el.style.left = `${Math.round(artX - (parent.left - root.left))}px`;
+    el.style.top = `${Math.round(artY - (parent.top - root.top))}px`;
+  };
+
+  const writeBack = (
+    from: { x: number; y: number; w: number; h: number },
+    artX: number,
+    artY: number,
+    extra: { opacity?: number; fontSize?: number } = {},
+  ) => {
+    const el = elementFor(from);
+    const stillId = el?.getAttribute("data-still");
+    if (!el || !stillId) return;
+    place(el, artX, artY);
+    if (extra.opacity != null) el.style.opacity = String(extra.opacity);
+    if (extra.fontSize != null) el.style.fontSize = `${Math.round(extra.fontSize)}px`;
+    const left = Number.parseFloat(el.style.left);
+    const top = Number.parseFloat(el.style.top);
+    setError(null);
+    commit({
+      html: patchStill(
+        html,
+        stillId,
+        {
+          left,
+          top,
+          ...(extra.opacity != null ? { opacity: extra.opacity } : {}),
+          ...(extra.fontSize != null ? { fontSize: extra.fontSize } : {}),
+        },
+        hintFor(el),
+      ),
+      width,
+      height,
+    });
   };
 
   const findings = scene?.findings.filter((finding) => area === "all" || finding.area === area) ?? [];
@@ -444,15 +600,15 @@ export function Studio() {
                 {copied ? "Copied" : "Copy brief"}
               </button>
             </details>
+            <p className="text-xs text-muted">Canvas matches the project, or the PSD. Change it only when the export should differ.</p>
             <div className="grid grid-cols-2 gap-2">
               <label className="block text-xs text-muted">
                 Width
                 <input
                   type="number"
-                  min={64}
-                  max={1920}
+                  min={1}
                   value={width}
-                  onChange={(event) => setWidth(clampSize(Number(event.target.value)))}
+                  onChange={(event) => commit({ html, width: canvasSize(Number(event.target.value)), height })}
                   className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg"
                 />
               </label>
@@ -460,10 +616,9 @@ export function Studio() {
                 Height
                 <input
                   type="number"
-                  min={64}
-                  max={1920}
+                  min={1}
                   value={height}
-                  onChange={(event) => setHeight(clampSize(Number(event.target.value)))}
+                  onChange={(event) => commit({ html, width, height: canvasSize(Number(event.target.value)) })}
                   className="mt-1 w-full rounded-md border border-line bg-bg px-2 py-2 font-mono text-sm text-fg"
                 />
               </label>
@@ -485,7 +640,18 @@ export function Studio() {
               Markup
               <textarea
                 value={html}
-                onChange={(event) => setHtml(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  const meta = readStillMeta(next);
+                  commit(
+                    {
+                      html: next,
+                      width: meta.sized ? meta.width : width,
+                      height: meta.sized ? meta.height : height,
+                    },
+                    true,
+                  );
+                }}
                 spellCheck={false}
                 className="mt-1 h-48 w-full resize-y rounded-md border border-line bg-bg p-3 font-mono text-xs leading-relaxed text-fg"
               />
@@ -529,6 +695,24 @@ export function Studio() {
                 Proof
               </button>
             </div>
+            <div className="flex rounded-md border border-line">
+              <button
+                type="button"
+                disabled={!canUndo(history)}
+                onClick={() => setHistory((current) => undo(current))}
+                className="min-h-11 px-3 text-sm text-fg disabled:text-muted"
+              >
+                Undo
+              </button>
+              <button
+                type="button"
+                disabled={!canRedo(history)}
+                onClick={() => setHistory((current) => redo(current))}
+                className="min-h-11 border-l border-line px-3 text-sm text-fg disabled:text-muted"
+              >
+                Redo
+              </button>
+            </div>
             <p className="truncate font-mono text-xs text-muted">
               {width}×{height}
               {duration != null ? ` · f${frame}` : ""} · 72 ppi
@@ -538,7 +722,7 @@ export function Studio() {
           {view === "proof" ? (
             <p className="px-4 pb-2 text-xs text-muted">Rebuilt from the layer stack, not the live page. A gap here is listed under Fidelity.</p>
           ) : (
-            <p className="px-4 pb-2 text-xs text-muted">Drop an HTML still anywhere. One file, one frame, one PSD.</p>
+            <p className="px-4 pb-2 text-xs text-muted">Drag a layer. Undo restores the document, not the selection.</p>
           )}
           {notes.length ? (
             <div className="space-y-1 px-4 pb-2">
@@ -580,6 +764,59 @@ export function Studio() {
                   }}
                 />
               ) : null}
+              {view === "frame" && scene ? (
+                <div
+                  className="absolute inset-0 cursor-default"
+                  data-edit-layer=""
+                  onPointerDown={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const x = (event.clientX - rect.left) / scale;
+                    const y = (event.clientY - rect.top) / scale;
+                    const next = topLayerAt(scene.layers, x, y);
+                    if (!next) {
+                      setSelected(null);
+                      return;
+                    }
+                    setSelected(next.id);
+                    const el = elementFor(next.box);
+                    const stillId = el?.getAttribute("data-still");
+                    if (!el || !stillId) return;
+                    setError(null);
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                    move.current = {
+                      name: next.name,
+                      el,
+                      px: x,
+                      py: y,
+                      boxX: next.box.x,
+                      boxY: next.box.y,
+                      lastX: next.box.x,
+                      lastY: next.box.y,
+                      stillId,
+                      hint: hintFor(el),
+                    };
+                  }}
+                  onPointerMove={(event) => {
+                    const drag = move.current;
+                    if (!drag) return;
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const x = drag.boxX + ((event.clientX - rect.left) / scale - drag.px);
+                    const y = drag.boxY + ((event.clientY - rect.top) / scale - drag.py);
+                    drag.lastX = x;
+                    drag.lastY = y;
+                    place(drag.el, x, y);
+                  }}
+                  onPointerUp={() => {
+                    const drag = move.current;
+                    move.current = null;
+                    if (!drag) return;
+                    const left = Number.parseFloat(drag.el.style.left);
+                    const top = Number.parseFloat(drag.el.style.top);
+                    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+                    commit({ html: patchStill(html, drag.stillId, { left, top }, drag.hint), width, height });
+                  }}
+                />
+              ) : null}
             </div>
           </div>
           {error ? <p className="px-4 pb-3 text-sm text-accent">{error}</p> : null}
@@ -610,6 +847,17 @@ export function Studio() {
             <p className="border-t border-line px-3 py-2 text-xs text-muted">
               Folded into the baked raster above it. It is in this list so you can see the structure. It is not its own Photoshop layer.
             </p>
+          ) : null}
+          {selected && scene && layerById(scene.layers, selected) && !layerById(scene.layers, selected)?.folded ? (
+            <EditFields
+              key={`${selected}-${layerById(scene.layers, selected)!.box.x}-${layerById(scene.layers, selected)!.box.y}`}
+              layer={layerById(scene.layers, selected)!}
+              onApply={(artX, artY, extra) => {
+                const layer = layerById(scene.layers, selected);
+                if (!layer) return;
+                writeBack(layer.box, artX, artY, extra);
+              }}
+            />
           ) : null}
         </section>
 

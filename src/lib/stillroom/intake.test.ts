@@ -15,7 +15,14 @@ describe("still intake", () => {
 
   it("prefers data-width and names the file from the comp", () => {
     const meta = readStillMeta(`<div data-width="800" data-height="700" data-frame="3" style="width:100px;height:100px"></div>`);
-    assert.deepEqual(meta, { width: 800, height: 700, frame: 3 });
+    assert.deepEqual(meta, { width: 800, height: 700, frame: 3, sized: true });
     assert.equal(stillFilename("Launch Still.html", 3), "launch-still-f3.psd");
+  });
+
+  it("keeps a project that is larger than a preview stage", () => {
+    const meta = readStillMeta(`<div data-width="3840" data-height="2160" style="width:960px;height:540px"></div>`);
+    assert.equal(meta.width, 3840);
+    assert.equal(meta.height, 2160);
+    assert.equal(meta.sized, true);
   });
 });

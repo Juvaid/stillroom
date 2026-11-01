@@ -44,4 +44,4 @@ Do not use
 - Cross-origin images. Their pixels cannot be copied; you get the plate and the alt, not the picture.
 
 Size
-- Design at the export size. 72 CSS pixels equal 72 points. Stay within 1920 on a side.`;
+- Design at the export size. The Photoshop canvas is that size, not a resized preview. 72 CSS pixels equal 72 points.`;

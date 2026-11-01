@@ -81,6 +81,9 @@ describe("photoshop to remotion", () => {
     assert.match(source, /zIndex: 1/);
     assert.match(source, /clipPath: "path\(/);
     assert.match(source, /data-clip="Back"/);
+    const root = new TextDecoder().decode(project.files.find((file) => file.path === "src/Root.tsx")!.data);
+    assert.match(root, /width=\{120\}/);
+    assert.match(root, /height=\{80\}/);
     const zip = projectZip(project);
     assert.equal(zip[0], 0x50);
     assert.equal(zip[1], 0x4b);

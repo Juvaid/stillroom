@@ -57,7 +57,7 @@ type Flags = {
 };
 
 export function wrapSource(html: string, width: number, height: number): string {
-  const base = `html,body{margin:0;width:${width}px;height:${height}px;background:transparent}`;
+  const base = `html,body{margin:0;width:${width}px;height:${height}px;background:transparent}[data-still-off]{visibility:hidden!important}`;
   if (/<html[\s>]/i.test(html)) {
     if (/<head[\s>]/i.test(html)) return html.replace(/<head[^>]*>/i, `$&<style>${base}</style>`);
     return html.replace(/<html[^>]*>/i, `$&<head><style>${base}</style></head>`);
@@ -75,7 +75,29 @@ export async function prepareFrame(frame: HTMLIFrameElement, time: number) {
   }
   win.renderFrame?.(time);
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  closeClips(doc, time);
   return doc;
+}
+
+function closeClips(doc: Document, frame: number) {
+  const view = doc.defaultView;
+  if (!view) return;
+  for (const node of doc.querySelectorAll("[data-from]")) {
+    if (!(node instanceof view.HTMLElement)) continue;
+    const from = numAttr(node.getAttribute("data-from"));
+    const on = clipVisible(frame, from, numAttr(node.getAttribute("data-duration")));
+    if (on) node.removeAttribute("data-still-off");
+    else node.setAttribute("data-still-off", "");
+  }
+}
+
+function insideOffClip(el: Element, frame: number | null) {
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    const from = numAttr(node.getAttribute("data-from"));
+    if (from == null) continue;
+    if (!clipVisible(frame, from, numAttr(node.getAttribute("data-duration")))) return true;
+  }
+  return false;
 }
 
 function note(cap: Cap, finding: Omit<Finding, "id">, key?: string) {
@@ -853,7 +875,7 @@ async function captureElement(cap: Cap, el: Element, flags: Flags): Promise<Scen
   const view = cap.doc.defaultView;
   if (!view || SKIP.has(el.tagName)) return null;
   const style = view.getComputedStyle(el);
-  if (style.display === "none" || style.visibility === "hidden") {
+  if ((style.display === "none" || style.visibility === "hidden") && !insideOffClip(el, cap.frame)) {
     note(
       cap,
       {

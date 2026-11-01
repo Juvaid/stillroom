@@ -451,6 +451,7 @@ export function projectFromPsd(psd: Psd, filename = "FromPhotoshop.psd"): Remoti
   const height = Math.max(1, Math.round(psd.height));
   const out: Out = {
     notes: [
+      `Canvas is ${width}×${height}, the same as the PSD.`,
       "The PSD has no timeline. This composition holds for 90 frames so each layer can be animated. Bottom of the panel is z-index 1.",
     ],
     assets: [],

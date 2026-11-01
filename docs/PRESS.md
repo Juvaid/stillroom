@@ -107,7 +107,7 @@ These matter as much as pixel error. They are why a flattened render is the wron
 | Honesty | A dropped `backdrop-filter` that is listed is better than a blur that was never written. |
 | One frame | Remotion time is closed on the way in. The press is not a timeline editor. |
 | Script trust | Markup runs in the frame. Only press files you trust. |
-| Size | 72 CSS pixels are 72 points. The intake clamps a side to 64–1920. |
+| Size | The canvas is the project size, or the PSD’s own dimensions. It is not scaled to fit a preview. 72 CSS pixels are 72 points, so type size stays honest. |
 | Same origin | Cross-origin pixels cannot be copied. You get the plate and the alt, not the picture. |
 
 ## Approaches we did not take
